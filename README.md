@@ -6,7 +6,7 @@
 
 **Offline Computer Vision Night Sky Video Analyzer & Meteor Detector**
 
-[![Version](https://img.shields.io/badge/version-2.1.3-38BDF8?style=flat-square)](https://github.com/bolido-astro/bolido/releases)
+[![Version](https://img.shields.io/badge/version-2.1.3-38BDF8?style=flat-square)](https://github.com/shablakovmihail-dev/Bolido/releases)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![GUI](https://img.shields.io/badge/GUI-PySide6-41CD52?style=flat-square&logo=qt&logoColor=white)](https://pypi.org/project/PySide6/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
@@ -73,8 +73,8 @@ bolido/
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/bolido-astro/bolido.git
-cd bolido
+git clone https://github.com/shablakovmihail-dev/Bolido.git
+cd Bolido
 ```
 
 ### 2. Create and Activate Virtual Environment

@@ -176,8 +176,8 @@ class AboutDialog(QDialog):
         footer_layout.setSpacing(10)
 
         github_label = QLabel(
-            '<a href="https://github.com/bolido-astro/bolido" '
-            'style="color: #38BDF8; text-decoration: none; font-weight: 600;">'
+            '<a href="https://github.com/shablakovmihail-dev/Bolido" '
+            'style="color: #38bdf8; text-decoration: none;">'
             'GitHub Repository ↗</a>'
         )
         github_label.setObjectName("GithubLink")
