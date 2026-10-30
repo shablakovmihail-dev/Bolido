@@ -1,0 +1,49 @@
+# Bytecode and Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE and Editor configurations
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+
+# Test and Output data
+*.mp4
+*.avi
+*.mkv
+*.mov
+output/
+temp/
+*.xlsx
+
+# Logs, databases and caches
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Branding assets (explicitly allowed)
+!assets/
+!assets/**
