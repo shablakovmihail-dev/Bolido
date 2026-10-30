@@ -44,6 +44,12 @@ htmlcov/
 Thumbs.db
 desktop.ini
 
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+*.zip
+
 # Branding assets (explicitly allowed)
 !assets/
 !assets/**

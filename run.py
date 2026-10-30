@@ -31,12 +31,13 @@ from bolido.ui.widgets.splash import BolidoSplashScreen
 
 
 def main():
-    # Auto-generate icons if missing on first launch
-    try:
-        from build_assets import ensure_assets
-        ensure_assets()
-    except Exception:
-        pass
+    # Auto-generate icons if missing on first launch (development mode)
+    if not getattr(sys, "frozen", False):
+        try:
+            from build_assets import ensure_assets
+            ensure_assets()
+        except Exception:
+            pass
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
@@ -44,9 +45,8 @@ def main():
     app.setOrganizationName("BOLIDO")
 
     # Set application & taskbar icon
-    icon_path = Path("assets/app_icon.ico")
-    if not icon_path.exists():
-        icon_path = Path(__file__).resolve().parent / "assets" / "app_icon.ico"
+    from bolido.ui.assets import get_asset_path
+    icon_path = get_asset_path("app_icon.ico")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
