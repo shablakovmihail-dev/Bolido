@@ -16,7 +16,7 @@ class MetricCardWidget(QFrame):
             QFrame#CardPanel {
                 background-color: #161A24;
                 border: 1px solid #232A3B;
-                border-radius: 12px;
+                border-radius: 16px;
             }
         """)
 

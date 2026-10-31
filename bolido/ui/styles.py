@@ -4,8 +4,11 @@ Astro Dark Minimal (Graphite & Indigo) design tokens and palette stylesheet for 
 
 GRAPHITE_INDIGO_THEME = """
 /* Global Window & Background */
-QWidget {
+QMainWindow, QDialog {
     background-color: #12151C;
+}
+
+QWidget {
     color: #E2E8F0;
     font-family: "Segoe UI", "SF Pro Display", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
     font-size: 13px;
@@ -45,17 +48,17 @@ QRadioButton::indicator:checked, QCheckBox::indicator:checked {
     border-color: #3B82F6;
 }
 
-/* Sidebar & Panels (Outer Cards: R=12px, padding=12px) */
+/* Sidebar & Panels (Outer Cards: R=16px) */
 QFrame#Sidebar, QFrame#CardPanel {
     background-color: #161A24;
     border: 1px solid #232A3B;
-    border-radius: 12px;
+    border-radius: 16px;
 }
 
 /* GroupBox Container with Integrated Titles */
 QGroupBox {
     border: 1px solid #232A3B;
-    border-radius: 12px;
+    border-radius: 14px;
     margin-top: 10px;
     padding-top: 14px;
     background-color: #161A24;
@@ -119,9 +122,9 @@ QPushButton#PrimaryButton:hover {
 }
 
 QPushButton#PrimaryButton:disabled {
-    background-color: #1E2433;
-    color: #64748B;
-    border-color: #2B3244;
+    background-color: #1A2233;
+    color: #475569;
+    border: 1px solid #232A3B;
 }
 
 /* Danger / Stop Action: Muted Burgundy */
@@ -147,12 +150,12 @@ QPushButton#DangerButton:disabled {
     border-color: #2B3244;
 }
 
-/* Compact Player Control Buttons (32x32px, R=6px) */
+/* Compact Player Control Buttons (32x32px, R=8px) */
 QPushButton#PlayerBtn {
     background-color: #1E2433;
     color: #E2E8F0;
     border: 1px solid #2B3244;
-    border-radius: 6px;
+    border-radius: 8px;
     padding: 0px;
     width: 32px;
     height: 32px;
@@ -327,17 +330,17 @@ QComboBox QAbstractItemView {
     outline: none;
 }
 
-/* Compact Speed Selector in Video Player */
+/* Compact Speed Selector in Video Player (Symmetric padding, R=8px matching buttons) */
 QComboBox#speedSelector {
     background-color: #1C2230;
     border: 1px solid #283042;
-    border-radius: 6px;
+    border-radius: 8px;
     color: #E2E8F0;
-    padding: 4px 10px;
     font-size: 11px;
     font-weight: 600;
     min-height: 24px;
     height: 32px;
+    padding: 4px 10px;
     outline: none;
 }
 
@@ -348,9 +351,23 @@ QComboBox#speedSelector:hover {
 
 QComboBox#speedSelector::drop-down {
     border: none;
-    subcontrol-origin: padding;
-    subcontrol-position: top right;
-    width: 18px;
+    width: 0px;
+}
+
+QComboBox#speedSelector::down-arrow {
+    image: none;
+    width: 0px;
+    height: 0px;
+}
+
+QComboBox#speedSelector QAbstractItemView {
+    background-color: #1C202C;
+    border: 1px solid #283042;
+    border-radius: 8px;
+    selection-background-color: #2563EB;
+    selection-color: #FFFFFF;
+    color: #E2E8F0;
+    outline: none;
 }
 
 /* Scroll Bars */
@@ -417,16 +434,48 @@ QProgressBar::chunk {
     border-radius: 4px;
 }
 
-/* Seamless Tab Widget (Selected Tab Melts into Pane) */
+/* Detections Gallery Scroll Area (Seamless monolithic container, zero nested borders) */
+QScrollArea#gallery_scroll,
+QScrollArea#gallery_scroll > QWidget > QWidget {
+    border: none;
+    background: transparent;
+    background-color: transparent;
+}
+
+/* Seamless Tab Widget (Selected Tab Melts into Pane: R=16px) */
 QTabWidget::pane {
     border: 1px solid #232A3B;
-    border-radius: 12px;
+    border-radius: 16px;
+    border-top-left-radius: 0px;
     background-color: #161A24;
-    top: -1px;
+}
+
+QTabWidget > QStackedWidget,
+QTabWidget > QStackedWidget > QWidget {
+    background: transparent;
+    background-color: transparent;
 }
 
 QTabBar {
+    qproperty-drawBase: 0;
+    left: 0px;
+    margin: 0px;
+    margin-left: 0px;
+    padding: 0px;
+    padding-left: 0px;
     background: transparent;
+    border: none;
+}
+
+QTabBar::scroller {
+    width: 0px;
+}
+
+QTabBar QToolButton {
+    width: 0px;
+    height: 0px;
+    padding: 0px;
+    margin: 0px;
     border: none;
 }
 
@@ -436,18 +485,28 @@ QTabBar::tab {
     border-bottom: none;
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
-    padding: 8px 16px;
+    padding: 6px 11px;
+    margin-right: -4px;
     color: #64748B;
-    margin-right: 2px;
     font-weight: 600;
-    font-size: 12px;
+    font-size: 11px;
     outline: none;
 }
 
 QTabBar::tab:selected {
     background-color: #161A24;
     color: #F1F5F9;
+    border: 1px solid #232A3B;
     border-bottom: 1px solid #161A24;
+    margin-bottom: -1px;
+    z-index: 10;
+    outline: none;
+}
+
+QTabBar::tab:focus,
+QTabBar::tab:selected:focus {
+    outline: none;
+    border-color: #232A3B;
 }
 
 QTabBar::tab:hover:!selected {
@@ -455,14 +514,32 @@ QTabBar::tab:hover:!selected {
     background-color: #181E2B;
 }
 
-/* Table Widget */
+QTabBar::tab:first {
+    margin-left: 0px;
+    border-top-left-radius: 8px;
+}
+
+QTabBar::tab:last {
+    margin-right: 0px;
+}
+
+/* Table Widget (R=12px) */
 QTableWidget {
     background-color: #161A24;
     border: 1px solid #232A3B;
     gridline-color: #242A3A;
     color: #E2E8F0;
-    border-radius: 8px;
+    border-radius: 12px;
     outline: none;
+    selection-background-color: #1E293B;
+    selection-color: #F8FAFC;
+}
+
+/* Modals & Dialogs (R=16px) */
+QDialog, QMessageBox {
+    background-color: #161A24;
+    border: 1px solid #232A3B;
+    border-radius: 16px;
 }
 
 QTableWidget::item:selected {

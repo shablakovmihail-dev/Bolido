@@ -16,6 +16,9 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
+    QStyle,
+    QStyleOptionComboBox,
+    QStylePainter,
     QVBoxLayout,
     QWidget,
 )
@@ -28,6 +31,20 @@ from bolido.ui.icons import (
     ICON_STEP_PREV,
     get_svg_icon,
 )
+
+
+class SpeedSelectorComboBox(QComboBox):
+    """Refined speed selector combo box with optically centered label."""
+
+    def paintEvent(self, event):
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        opt.currentText = ""  # Delegate label drawing to custom centered text
+        painter = QStylePainter(self)
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, opt)
+        painter.setPen(QColor("#E2E8F0"))
+        painter.setFont(self.font())
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.currentText())
 
 
 class VideoPlayerWidget(QWidget):
@@ -61,8 +78,8 @@ class VideoPlayerWidget(QWidget):
             QFrame {
                 background-color: #0E1117;
                 border: none;
-                border-top-left-radius: 12px;
-                border-top-right-radius: 12px;
+                border-top-left-radius: 0px;
+                border-top-right-radius: 15px;
             }
         """)
         screen_layout = QVBoxLayout(self.screen_frame)
@@ -75,21 +92,19 @@ class VideoPlayerWidget(QWidget):
         screen_layout.addWidget(self.video_label)
         layout.addWidget(self.screen_frame, stretch=1)
 
-        # Bottom Controls Panel (Single clean block pinned to bottom)
-        ctrl_frame = QFrame()
-        ctrl_frame.setStyleSheet("""
+        # Bottom Controls Panel (Transparent background preserving outer card rounded border)
+        self.ctrl_frame = QFrame()
+        self.ctrl_frame.setStyleSheet("""
             QFrame {
-                background-color: #161A24;
+                background: transparent;
+                border: none;
                 border-top: 1px solid #232A3B;
-                border-left: none;
-                border-right: none;
-                border-bottom: none;
-                border-bottom-left-radius: 12px;
-                border-bottom-right-radius: 12px;
+                border-bottom-left-radius: 15px;
+                border-bottom-right-radius: 15px;
             }
         """)
-        ctrl_layout = QVBoxLayout(ctrl_frame)
-        ctrl_layout.setContentsMargins(14, 10, 14, 12)
+        ctrl_layout = QVBoxLayout(self.ctrl_frame)
+        ctrl_layout.setContentsMargins(12, 10, 12, 10)
         ctrl_layout.setSpacing(8)
 
         # Slider row (Time badge, Slider, Frame badge strictly centered)
@@ -171,14 +186,17 @@ class VideoPlayerWidget(QWidget):
         self.loop_btn.setToolTip("Loop Playback")
         self.loop_btn.setIcon(get_svg_icon(ICON_LOOP, size=15))
 
-        # Unified Speed Selector (Single dropdown combo box, 32px height)
-        self.speed_combo = QComboBox()
+        # Unified Speed Selector (Single dropdown combo box, 32px height, centered text)
+        self.speed_combo = SpeedSelectorComboBox()
         self.speed_combo.setObjectName("speedSelector")
         self.speed_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.speed_combo.setFixedHeight(32)
+        self.speed_combo.setFixedWidth(92)
         self.speed_combo.setToolTip("Playback Speed")
         for s in ["0.25x", "0.5x", "1.0x", "1.5x", "2.0x"]:
             self.speed_combo.addItem(f"Speed: {s}", s)
+        for i in range(self.speed_combo.count()):
+            self.speed_combo.setItemData(i, Qt.AlignmentFlag.AlignCenter, Qt.ItemDataRole.TextAlignmentRole)
         self.speed_combo.setCurrentIndex(2)  # 1.0x
         self.speed_combo.currentTextChanged.connect(self._update_playback_speed)
 
@@ -190,7 +208,7 @@ class VideoPlayerWidget(QWidget):
         btn_row.addStretch(1)
 
         ctrl_layout.addLayout(btn_row)
-        layout.addWidget(ctrl_frame)
+        layout.addWidget(self.ctrl_frame)
 
     @property
     def loop_chk(self):

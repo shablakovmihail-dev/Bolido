@@ -93,7 +93,7 @@ class AboutDialog(QDialog):
         logo_label.setObjectName("LogoLabel")
         title_badge_row.addWidget(logo_label)
 
-        version_badge = QLabel(f"Version {__version__}")
+        version_badge = QLabel(f"v{__version__}")
         version_badge.setObjectName("VersionBadge")
         title_badge_row.addWidget(version_badge)
         title_badge_row.addStretch()
@@ -202,7 +202,7 @@ class AboutDialog(QDialog):
             QDialog {
                 background-color: #161A24;
                 border: 1px solid #232A3B;
-                border-radius: 12px;
+                border-radius: 16px;
             }
 
             QLabel#AboutLogoImage {
@@ -237,7 +237,7 @@ class AboutDialog(QDialog):
             QFrame#DescriptionCard {
                 background-color: #11141D;
                 border: 1px solid #1E2433;
-                border-radius: 8px;
+                border-radius: 10px;
             }
 
             QLabel#DescriptionText {
@@ -249,7 +249,7 @@ class AboutDialog(QDialog):
             QFrame#StackCard {
                 background-color: #11141D;
                 border: 1px solid #1E2433;
-                border-radius: 8px;
+                border-radius: 10px;
             }
 
             QLabel#SectionHeader {

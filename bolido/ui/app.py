@@ -47,11 +47,13 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from bolido import __version__
 from bolido.config import DetectionConfig, DeviceConfig, DeviceType
 from bolido.core.backends.base import DeviceManager
 from bolido.core.models import MeteorEvent
 from bolido.ui.assets import get_asset_path
 from bolido.ui.icons import (
+    ICON_EXTERNAL_LINK,
     ICON_TAB_MERGE,
     ICON_TAB_SESSION,
     ICON_TAB_TABLE,
@@ -86,7 +88,7 @@ class BolidoMainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("BOLIDO — Offline Meteor & Fireball Detector")
+        self.setWindowTitle(f"BOLIDO v{__version__} — Offline Meteor & Fireball Detector")
         self.setMinimumSize(1180, 760)
         self.resize(1360, 860)
 
@@ -112,10 +114,6 @@ class BolidoMainWindow(QMainWindow):
         self._apply_stylesheet()
         self._init_device_indicator()
 
-        demo_video = Path("test_night_sky.mp4")
-        if demo_video.exists():
-            self.control_panel.path_input.setText(str(demo_video.resolve()))
-
     def _apply_stylesheet(self):
         self.setStyleSheet(GRAPHITE_INDIGO_THEME)
 
@@ -136,11 +134,15 @@ class BolidoMainWindow(QMainWindow):
         # Left Panel: Sidebar / Controls
         # --------------------------------------------------------------------
         self.control_panel = ControlPanelWidget()
+        self.btn_start = self.control_panel.start_btn
         self.control_panel.start_requested.connect(self._on_start_analysis)
         self.control_panel.cancel_requested.connect(self._on_cancel_analysis)
         self.control_panel.open_folder_requested.connect(self._on_open_folder)
         self.control_panel.export_zip_requested.connect(self._on_export_zip)
         self.control_panel.about_requested.connect(self._on_open_about)
+        self.control_panel.path_changed.connect(lambda _: self._update_start_button_state())
+        self.control_panel.radio_file.toggled.connect(lambda _: self._update_start_button_state())
+        self.control_panel.radio_folder.toggled.connect(lambda _: self._update_start_button_state())
         main_layout.addWidget(self.control_panel)
 
         # --------------------------------------------------------------------
@@ -188,11 +190,17 @@ class BolidoMainWindow(QMainWindow):
         gallery_header.addWidget(self.count_badge)
         gallery_layout.addLayout(gallery_header)
 
-        # Scroll Area for Event Cards
+        # Scroll Area for Event Cards (monolithic, zero nested borders)
         self.gallery_scroll = QScrollArea()
+        self.gallery_scroll.setObjectName("gallery_scroll")
         self.gallery_scroll.setWidgetResizable(True)
         self.gallery_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.gallery_scroll.setLineWidth(0)
+        self.gallery_scroll.setStyleSheet("background: transparent; border: none;")
+        self.scroll_area = self.gallery_scroll
+
         self.gallery_content = QWidget()
+        self.gallery_content.setStyleSheet("background: transparent; border: none;")
         self.gallery_cards_layout = QVBoxLayout(self.gallery_content)
         self.gallery_cards_layout.setContentsMargins(0, 0, 0, 0)
         self.gallery_cards_layout.setSpacing(8)
@@ -205,6 +213,7 @@ class BolidoMainWindow(QMainWindow):
         # Right Inspector Tabs
         self.inspector_tabs = QTabWidget()
         self.inspector_tabs.setDocumentMode(False)
+        self.inspector_tabs.tabBar().setUsesScrollButtons(False)
         self.inspector_tabs.currentChanged.connect(self._on_inspector_tab_changed)
 
         # Tab 1: Video Player
@@ -230,6 +239,31 @@ class BolidoMainWindow(QMainWindow):
         right_panel.addWidget(splitter, stretch=1)
         main_layout.addLayout(right_panel, stretch=1)
 
+        # Initial validation of start button state
+        self.btn_start.setEnabled(False)
+        self._update_start_button_state()
+
+    @property
+    def input_path(self) -> Optional[Path]:
+        """Current selected input path or None if empty."""
+        raw = self.control_panel.path_input.text().strip()
+        return Path(raw) if raw else None
+
+    def _update_start_button_state(self):
+        """Validates the input path and updates the Start Analysis button state."""
+        if getattr(self.control_panel, "_is_analyzing", False):
+            self.btn_start.setEnabled(True)
+            return
+
+        is_valid = False
+        p = self.input_path
+        if p and p.exists():
+            files = collect_video_files(p)
+            if len(files) > 0:
+                is_valid = True
+
+        self.btn_start.setEnabled(is_valid)
+
     def _create_merge_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -241,10 +275,16 @@ class BolidoMainWindow(QMainWindow):
         self.merge_mode_toggle = QPushButton("Switch to Clean Image")
         self.merge_mode_toggle.clicked.connect(self._toggle_clean_annotated)
 
+        self.open_original_merge_btn = QPushButton("  Open Original")
+        self.open_original_merge_btn.setIcon(get_svg_icon(ICON_EXTERNAL_LINK, size=14))
+        self.open_original_merge_btn.setToolTip("Open full-resolution image in default system viewer")
+        self.open_original_merge_btn.clicked.connect(self._open_original_merge)
+
         self.save_merge_btn = QPushButton("Save Image As...")
         self.save_merge_btn.clicked.connect(self._save_active_merge)
 
         bar.addWidget(self.merge_mode_toggle)
+        bar.addWidget(self.open_original_merge_btn)
         bar.addStretch(1)
         bar.addWidget(self.save_merge_btn)
         layout.addLayout(bar)
@@ -253,7 +293,7 @@ class BolidoMainWindow(QMainWindow):
         self.merge_scroll = QScrollArea()
         self.merge_scroll.setWidgetResizable(True)
         self.merge_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.merge_scroll.setStyleSheet("background-color: #0E1117; border: 1px solid #2B3244; border-radius: 8px;")
+        self.merge_scroll.setStyleSheet("background-color: #0E1117; border: 1px solid #232A3B; border-radius: 14px;")
 
         self.merge_label = QLabel("Select an event from the gallery to view the Max-Pixel Merge composite.")
         self.merge_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -273,10 +313,16 @@ class BolidoMainWindow(QMainWindow):
         self.session_mode_toggle = QPushButton("Show Raw Session Composite")
         self.session_mode_toggle.clicked.connect(self._toggle_session_mode)
 
+        self.open_original_session_btn = QPushButton("  Open Original")
+        self.open_original_session_btn.setIcon(get_svg_icon(ICON_EXTERNAL_LINK, size=14))
+        self.open_original_session_btn.setToolTip("Open full-resolution session composite in default system viewer")
+        self.open_original_session_btn.clicked.connect(self._open_original_session)
+
         self.save_session_btn = QPushButton("Save Session Image...")
         self.save_session_btn.clicked.connect(self._save_session_composite)
 
         bar.addWidget(self.session_mode_toggle)
+        bar.addWidget(self.open_original_session_btn)
         bar.addStretch(1)
         bar.addWidget(self.save_session_btn)
         layout.addLayout(bar)
@@ -284,7 +330,7 @@ class BolidoMainWindow(QMainWindow):
         self.session_scroll = QScrollArea()
         self.session_scroll.setWidgetResizable(True)
         self.session_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.session_scroll.setStyleSheet("background-color: #0E1117; border: 1px solid #2B3244; border-radius: 8px;")
+        self.session_scroll.setStyleSheet("background-color: #0E1117; border: 1px solid #232A3B; border-radius: 14px;")
 
         self.session_label = QLabel("Session Master Composite will appear here after video processing completes.")
         self.session_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -387,6 +433,8 @@ class BolidoMainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self.control_panel.status_label.setText("Cancelling...")
             self.worker.cancel()
+        self.control_panel.set_analyzing(False)
+        self._update_start_button_state()
         self.player_widget.unload_video()
         import gc
         gc.collect()
@@ -463,6 +511,7 @@ class BolidoMainWindow(QMainWindow):
     @pyqtSlot(list, float, float)
     def _on_all_completed(self, results: List[VideoAnalysisResult], total_video_dur: float, total_elapsed: float):
         self.control_panel.set_analyzing(False)
+        self._update_start_button_state()
         self.control_panel.progress_bar.setValue(100)
         self.control_panel.open_folder_btn.setEnabled(True)
         self.control_panel.export_zip_btn.setEnabled(True)
@@ -481,12 +530,22 @@ class BolidoMainWindow(QMainWindow):
             self.control_panel.status_label.setText(f"Completed! {total_meteors} meteors detected.")
         else:
             self.control_panel.status_label.setText("Completed: No meteors detected in footage.")
+
+        # Unminimize, bring window to front, and flash taskbar icon upon completion
+        if self.isMinimized():
+            self.setWindowState((self.windowState() & ~Qt.WindowState.WindowMinimized) | Qt.WindowState.WindowActive)
+            self.show()
+        self.raise_()
+        self.activateWindow()
+        QApplication.alert(self, 0)
+
         import gc
         gc.collect()
 
     @pyqtSlot(str)
     def _on_error(self, err: str):
         self.control_panel.set_analyzing(False)
+        self._update_start_button_state()
         self.control_panel.status_label.setText("Error during processing.")
         import gc
         gc.collect()
@@ -599,6 +658,20 @@ class BolidoMainWindow(QMainWindow):
             shutil.copy2(src, dest)
             QMessageBox.information(self, "Saved", f"Image saved to:\n{dest}")
 
+    def _open_original_merge(self):
+        """Opens full-resolution composite or video clip in default system viewer."""
+        if not self.selected_event:
+            return
+        path_to_open = (
+            self.selected_event.clean_merge_path
+            if self.show_clean_merge
+            else self.selected_event.max_merge_path
+        )
+        if not path_to_open or not Path(path_to_open).exists():
+            path_to_open = self.selected_event.max_merge_path or self.selected_event.clip_path
+        if path_to_open and Path(path_to_open).exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path_to_open).resolve())))
+
     def _load_session_composite(self):
         src = self.master_raw_path if self._show_raw_session else self.master_annotated_path
         if src and Path(src).exists():
@@ -630,6 +703,14 @@ class BolidoMainWindow(QMainWindow):
         if dest:
             shutil.copy2(src, dest)
             QMessageBox.information(self, "Saved", f"Session image saved to:\n{dest}")
+
+    def _open_original_session(self):
+        """Opens full-resolution master composite in default system viewer."""
+        path_to_open = self.master_raw_path if self._show_raw_session else self.master_annotated_path
+        if not path_to_open or not Path(path_to_open).exists():
+            path_to_open = self.master_annotated_path or self.master_raw_path
+        if path_to_open and Path(path_to_open).exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path_to_open).resolve())))
 
     def _append_table_row(self, ev: MeteorEvent):
         row = self.table.rowCount()
@@ -705,6 +786,7 @@ class BolidoMainWindow(QMainWindow):
             elif first_path.is_file():
                 self.control_panel.radio_file.setChecked(True)
                 self.control_panel.path_input.setText(str(first_path.resolve()))
+            self._update_start_button_state()
 
     def closeEvent(self, event: QtGui.QCloseEvent):
         if self.worker and self.worker.isRunning():

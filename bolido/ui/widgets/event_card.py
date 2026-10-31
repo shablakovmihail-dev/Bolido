@@ -125,7 +125,7 @@ class EventCardWidget(QFrame):
                 QFrame#CardPanel {
                     background-color: #1E293B;
                     border: 1px solid #3B82F6;
-                    border-radius: 8px;
+                    border-radius: 12px;
                 }
             """)
         else:
@@ -133,7 +133,7 @@ class EventCardWidget(QFrame):
                 QFrame#CardPanel {
                     background-color: #161A24;
                     border: 1px solid #232A3B;
-                    border-radius: 8px;
+                    border-radius: 12px;
                 }
                 QFrame#CardPanel:hover {
                     background-color: #1A202E;

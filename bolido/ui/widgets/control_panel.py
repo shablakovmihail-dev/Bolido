@@ -46,6 +46,7 @@ class ControlPanelWidget(QFrame):
     open_folder_requested = pyqtSignal()
     export_zip_requested = pyqtSignal()
     about_requested = pyqtSignal()
+    path_changed = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -158,6 +159,7 @@ class ControlPanelWidget(QFrame):
         path_row = QHBoxLayout()
         self.path_input = QLineEdit()
         self.path_input.setPlaceholderText("Select video file or directory...")
+        self.path_input.textChanged.connect(self.path_changed.emit)
         self.browse_btn = QPushButton("Browse...")
         self.browse_btn.clicked.connect(self._browse_path)
         path_row.addWidget(self.path_input, stretch=1)
@@ -285,6 +287,7 @@ class ControlPanelWidget(QFrame):
         self.start_btn = QPushButton("▶  START ANALYSIS")
         self.start_btn.setObjectName("PrimaryButton")
         self.start_btn.clicked.connect(self._on_action_clicked)
+        self.btn_start = self.start_btn
         layout.addWidget(self.start_btn)
 
         # Progress bar
@@ -327,10 +330,10 @@ class ControlPanelWidget(QFrame):
         if analyzing:
             self.start_btn.setText("⏹  STOP ANALYSIS")
             self.start_btn.setObjectName("DangerButton")
+            self.start_btn.setEnabled(True)
         else:
             self.start_btn.setText("▶  START ANALYSIS")
             self.start_btn.setObjectName("PrimaryButton")
-        self.start_btn.setEnabled(True)
         self.start_btn.style().unpolish(self.start_btn)
         self.start_btn.style().polish(self.start_btn)
 
