@@ -80,10 +80,30 @@ class EventCardWidget(QFrame):
         layout.addLayout(info_layout, stretch=1)
 
     def _load_thumbnail(self):
-        thumb_path = self.event.clean_merge_path or self.event.max_merge_path
-        if thumb_path and Path(thumb_path).exists():
-            pix = QPixmap(str(Path(thumb_path).resolve()))
-            if not pix.isNull():
+        # 1. Prefer lightweight 320x180 pre-generated thumbnail if available
+        thumb_file = None
+        main_path = self.event.clean_merge_path or self.event.max_merge_path
+        if main_path:
+            p = Path(main_path)
+            candidate = p.parent / f"event_{self.event.event_id:03d}_thumb.jpg"
+            if candidate.exists():
+                thumb_file = candidate
+            elif p.exists():
+                thumb_file = p
+
+        if thumb_file and thumb_file.exists():
+            from PyQt6.QtGui import QImageReader
+            reader = QImageReader(str(thumb_file.resolve()))
+            reader.setAutoTransform(True)
+            orig_sz = reader.size()
+            if orig_sz.isValid():
+                # Strictly bounded decode: decode stream into max 320x180 px without loading 1080p/4K into RAM
+                scaled_sz = orig_sz.scaled(320, 180, Qt.AspectRatioMode.KeepAspectRatio)
+                reader.setScaledSize(scaled_sz)
+
+            qimg = reader.read()
+            if not qimg.isNull():
+                pix = QPixmap.fromImage(qimg)
                 self.thumb_label.setPixmap(
                     pix.scaled(
                         self.thumb_label.size(),
@@ -92,6 +112,7 @@ class EventCardWidget(QFrame):
                     )
                 )
                 return
+
         self.thumb_label.setText("No Preview")
 
     def set_selected(self, selected: bool):

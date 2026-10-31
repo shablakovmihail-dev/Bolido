@@ -461,8 +461,8 @@ class AsyncVideoExporter:
         self.master_raw = base_canvas.copy()
         self._master_lock = threading.Lock()
 
-        # Queue and background worker thread
-        self._queue: queue.Queue = queue.Queue()
+        # Bounded export queue (max 3 events) to prevent unbounded memory growth
+        self._queue: queue.Queue = queue.Queue(maxsize=3)
         self._exported_events: List[MeteorEvent] = []
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="AsyncVideoExporter")
         self._stop_event = threading.Event()
@@ -484,10 +484,11 @@ class AsyncVideoExporter:
         """Submits an event task with Full-Res raw frames for background encoding."""
         if not self._started:
             self.start()
-        self._queue.put((event, raw_frames, clip_start_frame, clip_end_frame))
+        self._queue.put((event, raw_frames, clip_start_frame, clip_end_frame), block=True)
 
     def _worker_loop(self) -> None:
-        """Background worker loop encoding video clips and computing composites."""
+        """Background worker loop encoding video clips and computing composites with strict memory bounds."""
+        import gc
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
         while True:
@@ -505,25 +506,28 @@ class AsyncVideoExporter:
                 clip_filename = self.clips_dir / f"event_{event.event_id:03d}.mp4"
                 writer = cv2.VideoWriter(str(clip_filename), fourcc, self.fps, (self.width, self.height))
 
-                event_frames: List[np.ndarray] = []
+                max_merge: Optional[np.ndarray] = None
 
                 for cursor_idx, frame in enumerate(raw_frames, start=clip_start_frame):
                     writer.write(frame)
 
-                    # Save raw frames for the meteor flash interval
+                    # Save raw frames for the meteor flash interval and stream-accumulate max merge
                     if event.start_frame <= cursor_idx <= event.end_frame:
-                        event_frames.append(frame.copy())
+                        if max_merge is None:
+                            max_merge = frame.copy()
+                        else:
+                            np.maximum(max_merge, frame, out=max_merge)
+
                         raw_path = self.raw_frames_dir / f"event_{event.event_id:03d}_frame_{cursor_idx:05d}.jpg"
                         safe_imwrite(raw_path, frame)
                         event.raw_frames.append(str(raw_path))
 
                 writer.release()
+                del raw_frames  # Release heavy frame batch immediately from memory!
                 event.clip_path = str(clip_filename)
 
-                # 2. Compute Max-Pixel Merge in Full Resolution
-                if event_frames:
-                    max_merge = np.maximum.reduce(event_frames)
-
+                # 2. Save Max-Pixel Merge in Full Resolution
+                if max_merge is not None:
                     if self.save_clean:
                         clean_path = self.composites_dir / f"event_{event.event_id:03d}_clean.jpg"
                         safe_imwrite(clean_path, max_merge)
@@ -534,7 +538,16 @@ class AsyncVideoExporter:
                     safe_imwrite(annotated_path, annotated)
                     event.max_merge_path = str(annotated_path)
 
-                    # 3. Incrementally merge onto session master raw canvas
+                    # 3. Create pre-scaled lightweight thumbnail (max 320x180) for UI gallery
+                    img_h, img_w = annotated.shape[:2]
+                    scale = min(320.0 / max(1, img_w), 180.0 / max(1, img_h), 1.0)
+                    tw, th = max(1, int(round(img_w * scale))), max(1, int(round(img_h * scale)))
+                    thumb_img = cv2.resize(annotated, (tw, th), interpolation=cv2.INTER_AREA)
+                    thumb_path = self.composites_dir / f"event_{event.event_id:03d}_thumb.jpg"
+                    safe_imwrite(thumb_path, thumb_img)
+                    del thumb_img
+
+                    # 4. Incrementally merge onto session master raw canvas
                     with self._master_lock:
                         bx, by, bw, bh = event.trajectory_bbox
                         pad = max(24, int(max(bw, bh) * 0.35))
@@ -556,14 +569,19 @@ class AsyncVideoExporter:
                         roi_base[mask] = np.maximum(roi_base[mask], roi_event[mask])
                         self.master_raw[y1:y2, x1:x2] = roi_base
 
+                    del max_merge
+                    del annotated
+
                 self._exported_events.append(event)
 
-                # 4. Notify UI immediately so event card appears on-the-fly!
+                # 5. Notify UI immediately so event card appears on-the-fly!
                 if self.event_callback:
                     try:
                         self.event_callback(event)
                     except Exception as cb_err:
                         print(f"[WARNING] Event callback failed: {cb_err}")
+
+                gc.collect()
 
             except Exception as e:
                 print(f"[ERROR] Failed exporting event #{event.event_id}: {e}")

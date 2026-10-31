@@ -352,6 +352,8 @@ class BolidoMainWindow(QMainWindow):
         self.current_events.clear()
         self.table.setRowCount(0)
         self.selected_event = None
+        import gc
+        gc.collect()
         self.card_events.set_value("0")
         self.card_dur.set_value("0.0 s")
         self.card_proc_time.set_value("...")
@@ -468,11 +470,15 @@ class BolidoMainWindow(QMainWindow):
             self.control_panel.status_label.setText(f"Completed! {total_meteors} meteors detected.")
         else:
             self.control_panel.status_label.setText("Completed: No meteors detected in footage.")
+        import gc
+        gc.collect()
 
     @pyqtSlot(str)
     def _on_error(self, err: str):
         self.control_panel.set_analyzing(False)
         self.control_panel.status_label.setText("Error during processing.")
+        import gc
+        gc.collect()
         QMessageBox.critical(self, "Processing Error", f"An error occurred:\n{err}")
 
     @pyqtSlot()
@@ -491,6 +497,8 @@ class BolidoMainWindow(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         self.count_badge.setText("0 events")
+        import gc
+        gc.collect()
 
     def _on_event_card_selected(self, event: MeteorEvent):
         self._select_event(event)
@@ -536,14 +544,18 @@ class BolidoMainWindow(QMainWindow):
             path_to_load = self.selected_event.max_merge_path
 
         if path_to_load and Path(path_to_load).exists():
-            pix = QPixmap(str(Path(path_to_load).resolve()))
-            self._current_max_merge_pixmap = pix
-            scaled = pix.scaled(
-                self.merge_scroll.size() - QSize(20, 20),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.merge_label.setPixmap(scaled)
+            from PyQt6.QtGui import QImageReader
+            reader = QImageReader(str(Path(path_to_load).resolve()))
+            reader.setAutoTransform(True)
+            target_sz = self.merge_scroll.size() - QSize(20, 20)
+            if target_sz.width() > 50 and target_sz.height() > 50:
+                orig_sz = reader.size()
+                if orig_sz.isValid():
+                    reader.setScaledSize(orig_sz.scaled(target_sz, Qt.AspectRatioMode.KeepAspectRatio))
+            qimg = reader.read()
+            if not qimg.isNull():
+                self.merge_label.setPixmap(QPixmap.fromImage(qimg))
+            del qimg
         else:
             self.merge_label.setText("No Max-Merge image available for this event.")
 
@@ -568,13 +580,18 @@ class BolidoMainWindow(QMainWindow):
     def _load_session_composite(self):
         src = self.master_raw_path if self._show_raw_session else self.master_annotated_path
         if src and Path(src).exists():
-            pix = QPixmap(str(Path(src).resolve()))
-            scaled = pix.scaled(
-                self.session_scroll.size() - QSize(20, 20),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.session_label.setPixmap(scaled)
+            from PyQt6.QtGui import QImageReader
+            reader = QImageReader(str(Path(src).resolve()))
+            reader.setAutoTransform(True)
+            target_sz = self.session_scroll.size() - QSize(20, 20)
+            if target_sz.width() > 50 and target_sz.height() > 50:
+                orig_sz = reader.size()
+                if orig_sz.isValid():
+                    reader.setScaledSize(orig_sz.scaled(target_sz, Qt.AspectRatioMode.KeepAspectRatio))
+            qimg = reader.read()
+            if not qimg.isNull():
+                self.session_label.setPixmap(QPixmap.fromImage(qimg))
+            del qimg
 
     def _toggle_session_mode(self):
         self._show_raw_session = not self._show_raw_session

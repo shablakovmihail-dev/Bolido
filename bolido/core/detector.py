@@ -309,10 +309,14 @@ class MeteorDetector:
                 # Matrix screening on compute backend (GPU tensor batch or multi-threaded CPU)
                 batch_detections = self.backend.process_batch(frames_gray, start_frame_idx)
 
-                for (f_idx, _, _), frame_dets in zip(batch_items, batch_detections):
+                for item, frame_dets in zip(batch_items, batch_detections):
+                    f_idx = item[0]
                     tracker.update(f_idx, frame_dets)
 
                 processed_frames += len(batch_items)
+                del batch_items
+                del frames_gray
+                del batch_detections
 
                 # On-the-fly streaming: check if any closed event's post-buffer has fully arrived
                 ready_events = tracker.extract_ready_events(end_frame_idx, buffer_frames)
@@ -330,12 +334,18 @@ class MeteorDetector:
                     # Dispatch to background exporter worker without blocking analysis
                     async_exporter.submit_event(ev, raw_clip_frames, clip_start, clip_end)
                     all_detected_events.append(ev)
+                    del raw_clip_frames
 
                 if progress_callback:
                     elapsed = max(0.001, time.time() - t_start)
                     cur_fps = processed_frames / elapsed
                     speed_mult = cur_fps / fps if fps > 0 else 1.0
                     progress_callback(processed_frames, total_frames, cur_fps, speed_mult)
+
+                # Periodic garbage collection every 180 frames (~6 sec) to reclaim fragmented RAM
+                if processed_frames % 180 == 0:
+                    import gc
+                    gc.collect()
 
             # Finalize remaining tracks at video stream conclusion
             trailing_events = tracker.finalize()
@@ -349,11 +359,14 @@ class MeteorDetector:
                 raw_clip_frames = reader.get_raw_frames(clip_start, clip_end)
                 async_exporter.submit_event(ev, raw_clip_frames, clip_start, clip_end)
                 all_detected_events.append(ev)
+                del raw_clip_frames
 
         finally:
             reader.stop()
             if self.backend:
                 self.backend.reset()
+            import gc
+            gc.collect()
 
         # Wait for background video encoder to finish all queued clips and composites
         async_exporter.wait_complete()
