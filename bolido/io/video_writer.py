@@ -6,6 +6,7 @@ Decoupled from GUI and core detection algorithms.
 from __future__ import annotations
 
 import csv
+import gc
 import math
 import queue
 import threading
@@ -67,7 +68,7 @@ class VideoExporter:
         clips_dir.mkdir(parents=True, exist_ok=True)
 
         if base_canvas is not None:
-            master_raw = base_canvas.copy()
+            master_raw = base_canvas.copy().astype(np.uint8)
         else:
             master_raw = np.zeros((height, width, 3), dtype=np.uint8)
 
@@ -148,6 +149,8 @@ class VideoExporter:
                 )
                 roi_base[mask] = np.maximum(roi_base[mask], roi_event[mask])
                 master_raw[y1:y2, x1:x2] = roi_base
+
+            event.strip_heavy_buffers()
 
         cap.release()
 
@@ -439,9 +442,11 @@ class AsyncVideoExporter:
         base_canvas: np.ndarray,
         save_clean: bool = True,
         event_callback: Optional[Callable[[MeteorEvent], None]] = None,
+        video_path: Optional[Union[str, Path]] = None,
     ):
         self.output_dir = output_dir
         self.video_name = video_name
+        self.video_path = Path(video_path) if video_path else None
         self.fps = fps
         self.width = width
         self.height = height
@@ -457,12 +462,12 @@ class AsyncVideoExporter:
         self.composites_dir.mkdir(parents=True, exist_ok=True)
         self.clips_dir.mkdir(parents=True, exist_ok=True)
 
-        # Session master canvas
-        self.master_raw = base_canvas.copy()
+        # Session master canvas strictly in np.uint8 format
+        self.master_raw = base_canvas.copy().astype(np.uint8)
         self._master_lock = threading.Lock()
 
-        # Bounded export queue (max 3 events) to prevent unbounded memory growth
-        self._queue: queue.Queue = queue.Queue(maxsize=3)
+        # Bounded export queue (max 1 event) to prevent unbounded memory growth
+        self._queue: queue.Queue = queue.Queue(maxsize=1)
         self._exported_events: List[MeteorEvent] = []
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="AsyncVideoExporter")
         self._stop_event = threading.Event()
@@ -477,18 +482,17 @@ class AsyncVideoExporter:
     def submit_event(
         self,
         event: MeteorEvent,
-        raw_frames: List[np.ndarray],
+        data: Optional[Union[np.ndarray, List[np.ndarray]]],
         clip_start_frame: int,
         clip_end_frame: int,
     ) -> None:
-        """Submits an event task with Full-Res raw frames for background encoding."""
+        """Submits an event task for background encoding (max-merge array, frame list, or streaming)."""
         if not self._started:
             self.start()
-        self._queue.put((event, raw_frames, clip_start_frame, clip_end_frame), block=True)
+        self._queue.put((event, data, clip_start_frame, clip_end_frame), block=True)
 
     def _worker_loop(self) -> None:
         """Background worker loop encoding video clips and computing composites with strict memory bounds."""
-        import gc
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
 
         while True:
@@ -497,34 +501,63 @@ class AsyncVideoExporter:
                 self._queue.task_done()
                 break
 
-            event, raw_frames, clip_start_frame, clip_end_frame = item
+            event, data, clip_start_frame, clip_end_frame = item
             event.clip_start_frame = clip_start_frame
             event.clip_end_frame = clip_end_frame
 
             try:
-                # 1. Encode MP4 clip in Full Resolution
-                clip_filename = self.clips_dir / f"event_{event.event_id:03d}.mp4"
-                writer = cv2.VideoWriter(str(clip_filename), fourcc, self.fps, (self.width, self.height))
-
                 max_merge: Optional[np.ndarray] = None
 
-                for cursor_idx, frame in enumerate(raw_frames, start=clip_start_frame):
-                    writer.write(frame)
+                if isinstance(data, np.ndarray):
+                    # Fast path: clip already sliced and written by reader's single decoder
+                    max_merge = data
+                elif data is None and self.video_path and self.video_path.exists():
+                    clip_filename = self.clips_dir / f"event_{event.event_id:03d}.mp4"
+                    writer = cv2.VideoWriter(str(clip_filename), fourcc, self.fps, (self.width, self.height))
+                    cap = cv2.VideoCapture(str(self.video_path), cv2.CAP_FFMPEG)
+                    if not cap.isOpened():
+                        cap = cv2.VideoCapture(str(self.video_path))
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, clip_start_frame)
+                    for cursor_idx in range(clip_start_frame, clip_end_frame + 1):
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+                        writer.write(frame)
 
-                    # Save raw frames for the meteor flash interval and stream-accumulate max merge
-                    if event.start_frame <= cursor_idx <= event.end_frame:
-                        if max_merge is None:
-                            max_merge = frame.copy()
-                        else:
-                            np.maximum(max_merge, frame, out=max_merge)
+                        if event.start_frame <= cursor_idx <= event.end_frame:
+                            if max_merge is None:
+                                max_merge = frame.copy()
+                            else:
+                                np.maximum(max_merge, frame, out=max_merge)
 
-                        raw_path = self.raw_frames_dir / f"event_{event.event_id:03d}_frame_{cursor_idx:05d}.jpg"
-                        safe_imwrite(raw_path, frame)
-                        event.raw_frames.append(str(raw_path))
+                            raw_path = self.raw_frames_dir / f"event_{event.event_id:03d}_frame_{cursor_idx:05d}.jpg"
+                            safe_imwrite(raw_path, frame)
+                            event.raw_frames.append(str(raw_path))
 
-                writer.release()
-                del raw_frames  # Release heavy frame batch immediately from memory!
-                event.clip_path = str(clip_filename)
+                        del frame
+                    cap.release()
+                    writer.release()
+                    event.clip_path = str(clip_filename)
+                elif isinstance(data, list):
+                    clip_filename = self.clips_dir / f"event_{event.event_id:03d}.mp4"
+                    writer = cv2.VideoWriter(str(clip_filename), fourcc, self.fps, (self.width, self.height))
+                    for cursor_idx, frame in enumerate(data, start=clip_start_frame):
+                        writer.write(frame)
+
+                        # Save raw frames for the meteor flash interval and stream-accumulate max merge
+                        if event.start_frame <= cursor_idx <= event.end_frame:
+                            if max_merge is None:
+                                max_merge = frame.copy()
+                            else:
+                                np.maximum(max_merge, frame, out=max_merge)
+
+                            raw_path = self.raw_frames_dir / f"event_{event.event_id:03d}_frame_{cursor_idx:05d}.jpg"
+                            safe_imwrite(raw_path, frame)
+                            event.raw_frames.append(str(raw_path))
+
+                    writer.release()
+                    del data  # Release heavy frame batch immediately from memory!
+                    event.clip_path = str(clip_filename)
 
                 # 2. Save Max-Pixel Merge in Full Resolution
                 if max_merge is not None:
@@ -572,6 +605,8 @@ class AsyncVideoExporter:
                     del max_merge
                     del annotated
 
+                # 4. Strip heavy numpy contours & buffers now that export and rendering are completed
+                event.strip_heavy_buffers()
                 self._exported_events.append(event)
 
                 # 5. Notify UI immediately so event card appears on-the-fly!
@@ -620,5 +655,10 @@ class AsyncVideoExporter:
 
         csv_path = self.output_dir / "detections.csv"
         VideoExporter.save_csv(csv_path, self._exported_events, self.fps)
+
+        # Release master canvas and force immediate garbage collection
+        del master_annotated
+        self.master_raw = None
+        gc.collect()
 
         return master_raw_path, master_annotated_path

@@ -157,3 +157,9 @@ class MeteorEvent:
             int(round(bh * scale_y)),
         )
         self.approx_length_px = round(self.approx_length_px * max(scale_x, scale_y), 1)
+
+    def strip_heavy_buffers(self) -> None:
+        """Removes all heavy numpy arrays (contours, temporary buffers) to retain only lightweight scalar metadata."""
+        for det in self.detections:
+            det.contour = None
+        self.raw_frames.clear()

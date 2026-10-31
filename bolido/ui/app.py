@@ -205,6 +205,7 @@ class BolidoMainWindow(QMainWindow):
         # Right Inspector Tabs
         self.inspector_tabs = QTabWidget()
         self.inspector_tabs.setDocumentMode(False)
+        self.inspector_tabs.currentChanged.connect(self._on_inspector_tab_changed)
 
         # Tab 1: Video Player
         self.player_widget = VideoPlayerWidget()
@@ -348,6 +349,7 @@ class BolidoMainWindow(QMainWindow):
         self.active_output_dir = out_root
 
         # Reset UI
+        self.player_widget.unload_video()
         self._clear_gallery()
         self.current_events.clear()
         self.table.setRowCount(0)
@@ -385,6 +387,9 @@ class BolidoMainWindow(QMainWindow):
         if self.worker and self.worker.isRunning():
             self.control_panel.status_label.setText("Cancelling...")
             self.worker.cancel()
+        self.player_widget.unload_video()
+        import gc
+        gc.collect()
 
     @pyqtSlot(int, int, float, float)
     def _on_progress(self, cur_frame: int, tot_frames: int, cur_fps: float, speed_mult: float):
@@ -428,6 +433,9 @@ class BolidoMainWindow(QMainWindow):
         if len(self.current_events) == 1:
             self._select_event(event)
 
+        import gc
+        gc.collect()
+
     @pyqtSlot(object)
     def _on_video_completed(self, result: VideoAnalysisResult):
         self.master_raw_path = result.master_raw_path
@@ -448,6 +456,9 @@ class BolidoMainWindow(QMainWindow):
 
         if result.events and not self.selected_event:
             self._select_event(result.events[0])
+
+        import gc
+        gc.collect()
 
     @pyqtSlot(list, float, float)
     def _on_all_completed(self, results: List[VideoAnalysisResult], total_video_dur: float, total_elapsed: float):
@@ -492,6 +503,7 @@ class BolidoMainWindow(QMainWindow):
     # ------------------------------------------------------------------------
 
     def _clear_gallery(self):
+        self.player_widget.unload_video()
         while self.gallery_cards_layout.count() > 1:
             item = self.gallery_cards_layout.takeAt(0)
             if item.widget():
@@ -501,9 +513,9 @@ class BolidoMainWindow(QMainWindow):
         gc.collect()
 
     def _on_event_card_selected(self, event: MeteorEvent):
-        self._select_event(event)
+        self._select_event(event, autoplay=True)
 
-    def _select_event(self, event: MeteorEvent, sync_table: bool = True):
+    def _select_event(self, event: MeteorEvent, sync_table: bool = True, autoplay: bool = False):
         self.selected_event = event
 
         for i in range(self.gallery_cards_layout.count() - 1):
@@ -525,12 +537,22 @@ class BolidoMainWindow(QMainWindow):
                 self.table.selectRow(row_idx)
                 self.table.blockSignals(False)
 
-        # 1. Load video clip in player
-        if event.clip_path and Path(event.clip_path).exists():
-            self.player_widget.load_video(event.clip_path, autoplay=True)
+        # 1. Load video clip in player only if player tab is active and analysis is idle (or user explicit action)
+        self.player_widget.unload_video()
+        if (self.inspector_tabs.currentIndex() == 0) and (autoplay or not self.worker or not self.worker.isRunning()):
+            if event.clip_path and Path(event.clip_path).exists():
+                self.player_widget.load_video(event.clip_path, autoplay=autoplay)
 
         # 2. Render max merge
         self._render_active_max_merge()
+
+    def _on_inspector_tab_changed(self, index: int):
+        if index != 0:
+            # Releasing media stream when switching away from video player frees 300+ MB decoder RAM
+            self.player_widget.unload_video()
+        else:
+            if self.selected_event and self.selected_event.clip_path and Path(self.selected_event.clip_path).exists():
+                self.player_widget.load_video(self.selected_event.clip_path, autoplay=False)
 
     def _render_active_max_merge(self):
         if not self.selected_event:
@@ -547,11 +569,11 @@ class BolidoMainWindow(QMainWindow):
             from PyQt6.QtGui import QImageReader
             reader = QImageReader(str(Path(path_to_load).resolve()))
             reader.setAutoTransform(True)
-            target_sz = self.merge_scroll.size() - QSize(20, 20)
-            if target_sz.width() > 50 and target_sz.height() > 50:
-                orig_sz = reader.size()
-                if orig_sz.isValid():
-                    reader.setScaledSize(orig_sz.scaled(target_sz, Qt.AspectRatioMode.KeepAspectRatio))
+            target_w = min(1280, max(320, self.merge_scroll.width() - 24))
+            target_h = min(800, max(240, self.merge_scroll.height() - 24))
+            orig_sz = reader.size()
+            if orig_sz.isValid():
+                reader.setScaledSize(orig_sz.scaled(target_w, target_h, Qt.AspectRatioMode.KeepAspectRatio))
             qimg = reader.read()
             if not qimg.isNull():
                 self.merge_label.setPixmap(QPixmap.fromImage(qimg))
@@ -583,11 +605,11 @@ class BolidoMainWindow(QMainWindow):
             from PyQt6.QtGui import QImageReader
             reader = QImageReader(str(Path(src).resolve()))
             reader.setAutoTransform(True)
-            target_sz = self.session_scroll.size() - QSize(20, 20)
-            if target_sz.width() > 50 and target_sz.height() > 50:
-                orig_sz = reader.size()
-                if orig_sz.isValid():
-                    reader.setScaledSize(orig_sz.scaled(target_sz, Qt.AspectRatioMode.KeepAspectRatio))
+            target_w = min(1280, max(320, self.session_scroll.width() - 24))
+            target_h = min(800, max(240, self.session_scroll.height() - 24))
+            orig_sz = reader.size()
+            if orig_sz.isValid():
+                reader.setScaledSize(orig_sz.scaled(target_w, target_h, Qt.AspectRatioMode.KeepAspectRatio))
             qimg = reader.read()
             if not qimg.isNull():
                 self.session_label.setPixmap(QPixmap.fromImage(qimg))
@@ -630,19 +652,19 @@ class BolidoMainWindow(QMainWindow):
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.table.setItem(row, col, item)
 
-    def _select_event_by_index(self, row: int, sync_table: bool = True):
+    def _select_event_by_index(self, row: int, sync_table: bool = True, autoplay: bool = False):
         if 0 <= row < len(self.current_events):
-            self._select_event(self.current_events[row], sync_table=sync_table)
+            self._select_event(self.current_events[row], sync_table=sync_table, autoplay=autoplay)
 
     def _on_table_item_clicked(self, item: QTableWidgetItem):
-        self._select_event_by_index(item.row(), sync_table=False)
+        self._select_event_by_index(item.row(), sync_table=False, autoplay=False)
 
     def _on_table_cell_changed(self, cur_row: int, cur_col: int, prev_row: int, prev_col: int):
         if cur_row >= 0 and cur_row != prev_row:
-            self._select_event_by_index(cur_row, sync_table=False)
+            self._select_event_by_index(cur_row, sync_table=False, autoplay=False)
 
     def _on_table_item_double_clicked(self, item: QTableWidgetItem):
-        self._select_event_by_index(item.row(), sync_table=False)
+        self._select_event_by_index(item.row(), sync_table=False, autoplay=True)
         self.inspector_tabs.setCurrentIndex(0)
 
     def _on_open_folder(self):
@@ -683,3 +705,12 @@ class BolidoMainWindow(QMainWindow):
             elif first_path.is_file():
                 self.control_panel.radio_file.setChecked(True)
                 self.control_panel.path_input.setText(str(first_path.resolve()))
+
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        if self.worker and self.worker.isRunning():
+            self.worker.cancel()
+            self.worker.wait(1500)
+        self.player_widget.unload_video()
+        import gc
+        gc.collect()
+        super().closeEvent(event)

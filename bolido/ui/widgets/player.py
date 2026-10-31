@@ -197,10 +197,30 @@ class VideoPlayerWidget(QWidget):
         """Compatibility property for loop state."""
         return self.loop_btn
 
-    def load_video(self, video_path: str, autoplay: bool = True):
+    def unload_video(self):
+        """Explicitly releases media capture and frame buffers to prevent memory caching."""
         self.stop()
         if self.cap:
             self.cap.release()
+            self.cap = None
+        self.video_path = None
+        self.total_frames = 0
+        self.current_frame = 0
+        self.video_label.clear()
+        self.video_label.setText("No Video Loaded")
+        import gc
+        gc.collect()
+
+    def setSource(self, url: QtCore.QUrl):
+        """Compatibility method for media source lifecycle."""
+        if not url or url.isEmpty():
+            self.unload_video()
+        else:
+            local_path = url.toLocalFile() if url.isLocalFile() else url.toString()
+            self.load_video(local_path)
+
+    def load_video(self, video_path: str, autoplay: bool = True):
+        self.unload_video()
 
         self.video_path = video_path
         p = Path(video_path)
@@ -208,7 +228,9 @@ class VideoPlayerWidget(QWidget):
             self.video_label.setText(f"File not found:\n{p.name}")
             return
 
-        self.cap = cv2.VideoCapture(str(p.resolve()))
+        self.cap = cv2.VideoCapture(str(p.resolve()), cv2.CAP_FFMPEG)
+        if not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(str(p.resolve()))
         if not self.cap.isOpened():
             self.video_label.setText("Error loading video.")
             return
@@ -286,6 +308,7 @@ class VideoPlayerWidget(QWidget):
         ret, frame = self.cap.read()
         if ret:
             self._render_frame(frame)
+            del frame
             self.scrub_slider.blockSignals(True)
             self.scrub_slider.setValue(frame_num)
             self.scrub_slider.blockSignals(False)
@@ -293,22 +316,31 @@ class VideoPlayerWidget(QWidget):
             self.frame_changed.emit(frame_num)
 
     def _render_frame(self, frame: cv2.Mat):
-        h, w, ch = frame.shape
-        bytes_per_line = ch * w
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-        pix = QPixmap.fromImage(qimg)
-
         target_size = self.screen_frame.size() - QSize(16, 16)
-        if target_size.width() > 10 and target_size.height() > 10:
-            scaled = pix.scaled(
-                target_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.video_label.setPixmap(scaled)
+        tw = min(1280, max(10, target_size.width()))
+        th = min(800, max(10, target_size.height()))
+
+        h, w = frame.shape[:2]
+        scale = min(tw / float(w), th / float(h), 1.0)
+        disp_w = max(2, int(round(w * scale)))
+        disp_h = max(2, int(round(h * scale)))
+
+        # Downscale in OpenCV first so we allocate tiny ~0.5 MB buffer instead of 25.2 MB!
+        if disp_w != w or disp_h != h:
+            frame_disp = cv2.resize(frame, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
         else:
-            self.video_label.setPixmap(pix)
+            frame_disp = frame
+
+        rgb = cv2.cvtColor(frame_disp, cv2.COLOR_BGR2RGB)
+        dh, dw, dch = rgb.shape
+        qimg = QImage(rgb.data, dw, dh, dch * dw, QImage.Format.Format_RGB888)
+        pix = QPixmap.fromImage(qimg)
+        self.video_label.setPixmap(pix)
+        del qimg
+        del pix
+        if frame_disp is not frame:
+            del frame_disp
+        del rgb
 
     def _update_time_labels(self):
         cur_sec = self.current_frame / self.fps if self.fps > 0 else 0
@@ -337,3 +369,7 @@ class VideoPlayerWidget(QWidget):
         super().resizeEvent(event)
         if self.cap and self.cap.isOpened() and not self.is_playing:
             self.seek(self.current_frame)
+
+    def closeEvent(self, event):
+        self.unload_video()
+        super().closeEvent(event)

@@ -6,6 +6,7 @@ Completely independent from GUI and Qt.
 
 from __future__ import annotations
 
+import gc
 import math
 import time
 from pathlib import Path
@@ -260,6 +261,7 @@ class MeteorDetector:
         async_exporter = AsyncVideoExporter(
             output_dir=video_out_dir,
             video_name=video_path.name,
+            video_path=video_path,
             fps=fps,
             width=orig_w,
             height=orig_h,
@@ -328,13 +330,18 @@ class MeteorDetector:
                     clip_start = max(0, ev.start_frame - buffer_frames)
                     clip_end = min(total_frames - 1, ev.end_frame + buffer_frames)
 
-                    # Extract Full-Res pristine frames from RAM ring buffer
-                    raw_clip_frames = reader.get_raw_frames(clip_start, clip_end)
+                    # Slice clip and accumulate max-merge using reader's existing single decoder
+                    max_merge = reader.slice_event(
+                        event=ev,
+                        clip_start=clip_start,
+                        clip_end=clip_end,
+                        clips_dir=async_exporter.clips_dir,
+                        raw_frames_dir=async_exporter.raw_frames_dir,
+                    )
 
-                    # Dispatch to background exporter worker without blocking analysis
-                    async_exporter.submit_event(ev, raw_clip_frames, clip_start, clip_end)
+                    # Dispatch to background exporter worker without blocking analysis or allocating heavy frame arrays
+                    async_exporter.submit_event(ev, max_merge, clip_start, clip_end)
                     all_detected_events.append(ev)
-                    del raw_clip_frames
 
                 if progress_callback:
                     elapsed = max(0.001, time.time() - t_start)
@@ -344,7 +351,6 @@ class MeteorDetector:
 
                 # Periodic garbage collection every 180 frames (~6 sec) to reclaim fragmented RAM
                 if processed_frames % 180 == 0:
-                    import gc
                     gc.collect()
 
             # Finalize remaining tracks at video stream conclusion
@@ -356,16 +362,20 @@ class MeteorDetector:
                 clip_start = max(0, ev.start_frame - buffer_frames)
                 clip_end = min(total_frames - 1, ev.end_frame + buffer_frames)
 
-                raw_clip_frames = reader.get_raw_frames(clip_start, clip_end)
-                async_exporter.submit_event(ev, raw_clip_frames, clip_start, clip_end)
+                max_merge = reader.slice_event(
+                    event=ev,
+                    clip_start=clip_start,
+                    clip_end=clip_end,
+                    clips_dir=async_exporter.clips_dir,
+                    raw_frames_dir=async_exporter.raw_frames_dir,
+                )
+                async_exporter.submit_event(ev, max_merge, clip_start, clip_end)
                 all_detected_events.append(ev)
-                del raw_clip_frames
 
         finally:
             reader.stop()
             if self.backend:
                 self.backend.reset()
-            import gc
             gc.collect()
 
         # Wait for background video encoder to finish all queued clips and composites
@@ -373,5 +383,11 @@ class MeteorDetector:
 
         # Finalize full session master composite and tabular Excel/CSV reports
         async_exporter.finalize_session(total_frames)
+
+        # Guarantee all returned events have stripped any heavy numpy arrays
+        for ev in all_detected_events:
+            ev.strip_heavy_buffers()
+
+        gc.collect()
 
         return all_detected_events

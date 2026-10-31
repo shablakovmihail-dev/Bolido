@@ -45,7 +45,9 @@ class ThreadedVideoCapture:
         self._target_width = target_width
 
         # Probe video stream properties
-        cap = cv2.VideoCapture(str(self.video_path))
+        cap = cv2.VideoCapture(str(self.video_path), cv2.CAP_FFMPEG)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(str(self.video_path))
         if not cap.isOpened():
             raise RuntimeError(f"Failed to open video file: {self.video_path}")
 
@@ -90,10 +92,9 @@ class ThreadedVideoCapture:
         # 1. Bounded Queue: maxsize=90 (holds only lightweight 1-channel grayscale frames)
         self._queue: queue.Queue = queue.Queue(maxsize=self.queue_size)
 
-        # 2. Sliding window buffer: collections.deque(maxlen=BUFFER_LIMIT)
-        # Stores tuples (frame_idx, frame_orig) - auto-evicts oldest frame without holding stale refs
-        self._ring_buffer: collections.deque = collections.deque(maxlen=self.ring_buffer_size)
-        self._ring_lock = threading.Lock()
+        # 2. Re-used single video decoder handle with synchronization lock
+        self._cap: Optional[cv2.VideoCapture] = None
+        self._cap_lock = threading.Lock()
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -111,22 +112,27 @@ class ThreadedVideoCapture:
 
     def _worker(self) -> None:
         """Worker loop decoding frames asynchronously with bounded memory usage."""
-        cap = cv2.VideoCapture(str(self.video_path))
+        with self._cap_lock:
+            self._cap = cv2.VideoCapture(str(self.video_path), cv2.CAP_FFMPEG)
+            if not self._cap.isOpened():
+                self._cap = cv2.VideoCapture(str(self.video_path))
         frame_idx = 0
 
         needs_downscale = (self.proc_width != self.orig_width or self.proc_height != self.orig_height)
 
         try:
             while not self._stop_event.is_set():
-                ret, frame_orig = cap.read()
+                with self._cap_lock:
+                    if not self._cap or not self._cap.isOpened():
+                        break
+                    ret, frame_orig = self._cap.read()
+                    current_idx = frame_idx
+                    frame_idx += 1
+
                 if not ret:
                     break
 
-                # 1. Store Full-Res frame in bounded sliding deque (auto-drops oldest frame)
-                with self._ring_lock:
-                    self._ring_buffer.append((frame_idx, frame_orig))
-
-                # 2. Downscaled single-channel grayscale frame for detector
+                # Downscaled single-channel grayscale frame for detector
                 if needs_downscale:
                     frame_down = cv2.resize(
                         frame_orig,
@@ -137,21 +143,21 @@ class ThreadedVideoCapture:
                     del frame_down
                 else:
                     frame_gray = cv2.cvtColor(frame_orig, cv2.COLOR_BGR2GRAY)
+                del frame_orig
 
-                # 3. Blocking put into bounded queue (maxsize=90).
-                # Blocks decoding thread when queue is full so decoder does NOT outrun analysis in RAM!
+                # Blocking put into bounded queue (maxsize=90).
                 while not self._stop_event.is_set():
                     try:
-                        # Only put (frame_idx, frame_gray) - NEVER put heavy BGR frame into queue!
-                        self._queue.put((frame_idx, frame_gray), block=True, timeout=0.1)
+                        self._queue.put((current_idx, frame_gray), block=True, timeout=0.1)
                         break
                     except queue.Full:
                         continue
 
-                frame_idx += 1
-
         finally:
-            cap.release()
+            with self._cap_lock:
+                if self._cap:
+                    self._cap.release()
+                    self._cap = None
             try:
                 self._queue.put(None, timeout=0.5)
             except Exception:
@@ -188,89 +194,98 @@ class ThreadedVideoCapture:
             batch.append(item)
         return batch
 
-    def get_raw_frame(self, frame_idx: int) -> Optional[np.ndarray]:
+    def slice_event(
+        self,
+        event: MeteorEvent,
+        clip_start: int,
+        clip_end: int,
+        clips_dir: Path,
+        raw_frames_dir: Path,
+    ) -> Optional[np.ndarray]:
         """
-        Returns a single frame in native resolution from the sliding window.
-        If evicted, seeks and retrieves directly from video file on disk.
+        Slices Full-Res MP4 clip and accumulates max-merge using the existing VideoCapture instance.
+        Re-using the single decoder prevents spawning concurrent 4K decoders, keeping RAM strictly under 400-500 MB.
         """
-        with self._ring_lock:
-            for idx, frame in reversed(self._ring_buffer):
-                if idx == frame_idx:
-                    return frame
+        from bolido.io.video_writer import safe_imwrite
 
-        # Fallback disk seek only for evicted frames
-        cap = cv2.VideoCapture(str(self.video_path))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = cap.read()
-        cap.release()
-        return frame if ret else None
+        with self._cap_lock:
+            if not self._cap or not self._cap.isOpened():
+                return None
 
-    def get_raw_frames(self, start_frame: int, end_frame: int) -> List[np.ndarray]:
+            saved_pos = int(self._cap.get(cv2.CAP_PROP_POS_FRAMES))
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, clip_start)
+
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            clip_filename = clips_dir / f"event_{event.event_id:03d}.mp4"
+            writer = cv2.VideoWriter(str(clip_filename), fourcc, self.fps, (self.orig_width, self.orig_height))
+
+            max_merge: Optional[np.ndarray] = None
+
+            for cur_idx in range(clip_start, clip_end + 1):
+                ret, frame = self._cap.read()
+                if not ret:
+                    break
+                writer.write(frame)
+
+                if event.start_frame <= cur_idx <= event.end_frame:
+                    if max_merge is None:
+                        max_merge = frame.copy()
+                    else:
+                        np.maximum(max_merge, frame, out=max_merge)
+
+                    raw_path = raw_frames_dir / f"event_{event.event_id:03d}_frame_{cur_idx:05d}.jpg"
+                    safe_imwrite(raw_path, frame)
+                    event.raw_frames.append(str(raw_path))
+
+                del frame
+
+            writer.release()
+            event.clip_path = str(clip_filename)
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, saved_pos)
+            return max_merge
+
+    def compute_base_canvas(self, num_samples: int = 6) -> np.ndarray:
         """
-        Extracts a sequence of frames in full native resolution for clip and composite generation.
-        Fetches directly from RAM sliding window deque; falls back to disk seek only for evicted frames.
+        Calculates a pristine static starry sky base canvas in strict np.uint8 format.
+        Uses incremental streaming min-blend to prevent holding multiple 4K frames in RAM (saves >1 GB).
         """
-        frames_dict: dict[int, np.ndarray] = {}
-
-        # 1. Collect what is currently in sliding window deque
-        with self._ring_lock:
-            for idx, frame in self._ring_buffer:
-                if start_frame <= idx <= end_frame:
-                    frames_dict[idx] = frame
-
-        # 2. Identify missing evicted frames
-        missing_indices = [i for i in range(start_frame, end_frame + 1) if i not in frames_dict]
-
-        if missing_indices:
+        cap = cv2.VideoCapture(str(self.video_path), cv2.CAP_FFMPEG)
+        if not cap.isOpened():
             cap = cv2.VideoCapture(str(self.video_path))
-            cur_seek = -999999
-            for miss_idx in missing_indices:
-                if miss_idx != cur_seek:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, miss_idx)
-                    cur_seek = miss_idx
-                ret, frame = cap.read()
-                if ret:
-                    frames_dict[miss_idx] = frame
-                    cur_seek += 1
-                else:
-                    cur_seek = -999999
+        ret, first_frame = cap.read()
+        if not ret or first_frame is None:
             cap.release()
+            return np.zeros((self.orig_height, self.orig_width, 3), dtype=np.uint8)
 
-        # Build ordered list of frames
-        result = [frames_dict[i] for i in range(start_frame, end_frame + 1) if i in frames_dict]
-        return result
+        # Single canvas strictly in uint8
+        canvas = first_frame.copy()
+        del first_frame
 
-    def compute_base_canvas(self, num_samples: int = 25) -> np.ndarray:
-        """
-        Calculates a pristine static starry sky base canvas via median aggregation
-        over initial frames in full native resolution to prevent star trails.
-        """
-        sample_frames = []
-        cap = cv2.VideoCapture(str(self.video_path))
-        num_to_read = min(num_samples * 2, max(1, self.total_frames))
+        num_to_sample = min(6, max(1, self.total_frames))
+        step = max(1, min(40, self.total_frames // num_to_sample))
 
-        for i in range(num_to_read):
+        for s in range(1, num_to_sample):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, s * step)
             ret, frame = cap.read()
-            if not ret:
+            if not ret or frame is None:
                 break
-            if i % 2 == 0 and len(sample_frames) < num_samples:
-                sample_frames.append(frame)
+            # Darkest pixel blend removes any transient trails while preserving pristine star background
+            cv2.min(canvas, frame, dst=canvas)
+            del frame
 
         cap.release()
-
-        if sample_frames:
-            canvas = np.median(sample_frames, axis=0).astype(np.uint8)
-            del sample_frames
-            return canvas
-        return np.zeros((self.orig_height, self.orig_width, 3), dtype=np.uint8)
+        gc.collect()
+        return canvas.astype(np.uint8)
 
     def stop(self) -> None:
         """Stops reading thread and releases all allocated frame buffers immediately."""
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
-        with self._ring_lock:
-            self._ring_buffer.clear()
+        with self._cap_lock:
+            if self._cap:
+                self._cap.release()
+                self._cap = None
         while not self._queue.empty():
             try:
                 self._queue.get_nowait()
